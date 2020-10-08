@@ -15,6 +15,7 @@ namespace ConcurrentLab3
         public static AutoResetEvent evEmpty = new AutoResetEvent(true);
         public static SemaphoreSlim semFull;
         public static SemaphoreSlim semEmpty;
+        public static long Using = 0;
         static void dumpRead(object o)
         {
             while (!finish)
@@ -101,10 +102,16 @@ namespace ConcurrentLab3
                 evFull.WaitOne();
                 if (finish)
                 {
+                    evFull.Set();
                     break;
                 }
                 myMessages.Add(buffer);
                 evEmpty.Set();
+                if (finish)
+                {
+                    evFull.Set();
+                    break;
+                }
             }
         }
 
@@ -132,6 +139,41 @@ namespace ConcurrentLab3
                 }
                 myMessages.Add(buffer);
                 semEmpty.Release();
+            }
+        }
+
+        static void interlockedWrite(object o)
+        {
+            var messages = (string[])o;
+            int i = 0;
+            while (i < messages.Length)
+            {
+                if (0 == Interlocked.Exchange(ref Using, 1))
+                {
+                    if (bEmpty)
+                    {
+                        buffer = messages[i] + i.ToString();
+                        bEmpty = false;
+                        i++;
+                    }
+                    Interlocked.Exchange(ref Using, 0);
+                }
+            }
+        }
+
+        static void interlockedRead(object o)
+        {
+            while (!finish)
+            {
+                if (0 == Interlocked.Exchange(ref Using, 1))
+                {
+                    if (!bEmpty)
+                    {
+                        myMessages.Add(buffer);
+                        bEmpty = true;
+                    }
+                    Interlocked.Exchange(ref Using, 0);
+                }
             }
         }
 
@@ -261,22 +303,55 @@ namespace ConcurrentLab3
                 r.Join();
             }
         }
+
+        static void interlockedThreadsRunner(int readersNumber, int writersNumber, int writerMessagesNumber)
+        {
+            var writers = new Thread[writersNumber];
+            var readers = new Thread[readersNumber];
+            for (int i = 0; i < Math.Max(writersNumber, readersNumber); i++)
+            {
+                if (i < writersNumber)
+                {
+                    var messages = new string[writerMessagesNumber];
+                    var al = ((char)(i + 65)).ToString();
+                    Array.Fill<string>(messages, al);
+                    writers[i] = new Thread(interlockedWrite);
+                    writers[i].Start(messages);
+                }
+                if (i < readersNumber)
+                {
+                    readers[i] = new Thread(interlockedRead);
+                    readers[i].Start();
+                }
+            }
+            foreach (var w in writers)
+            {
+                w.Join();
+            }
+            finish = true;
+            foreach (var r in readers)
+            {
+                r.Join();
+            }
+        }
+
         static void Main(string[] args)
         {
             Console.BackgroundColor = ConsoleColor.White;
             Console.Clear();
             Console.ForegroundColor = ConsoleColor.Black;
             int totalMes = 100000;
-            int writers = 20;
-            int readers = 20;
+            int writers = 10;
+            int readers = 10;
             var sw = new Stopwatch();
             semFull = new SemaphoreSlim(0, 20);
             semEmpty = new SemaphoreSlim(1, 20);
             sw.Start();
             // dumpThreadsRunner(readers, writers, totalMes);
             // lockThreadsRunner(readers, writers, totalMes);
-             evThreadsRunner(readers, writers, totalMes);
+            // evThreadsRunner(readers, writers, totalMes);
             // semThreadsRunner(readers, writers, totalMes);
+            interlockedThreadsRunner(readers, writers, totalMes);
             sw.Stop();
             Console.WriteLine("Elapsed time {0} ms", sw.Elapsed.TotalMilliseconds);
             Console.WriteLine("Writers {0}; Readers {1}", writers, readers);
